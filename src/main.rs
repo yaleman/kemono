@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
+use kemono::errors::KemonoError;
 use kemono::{Attachment, KemonoClient, Post};
 use rayon::prelude::*;
 
@@ -41,12 +42,18 @@ fn download_image(
     attachment: &Attachment,
     creator: &str,
     service: &str,
-) -> Result<(), String> {
+) -> Result<(), KemonoError> {
     if attachment.name.is_none() {
-        return Err(format!("Attachment has no name! {:?}", attachment));
+        return Err(KemonoError::from(format!(
+            "Attachment has no name! {:?}",
+            attachment
+        )));
     }
     if attachment.path.is_none() {
-        return Err(format!("Attachment has no path! {:?}", attachment));
+        return Err(KemonoError::from(format!(
+            "Attachment has no path! {:?}",
+            attachment
+        )));
     }
 
     let download_path = PathBuf::from(format!(
@@ -80,9 +87,9 @@ fn download_image(
                     .map_err(|err| format!("Failed to create parent dirs: {:?}", err))?;
             }
             std::fs::write(download_path, data)
-                .map_err(|err| format!("Failed to write image data: {:?}", err))
+                .map_err(|err| KemonoError::from(format!("Failed to write image data: {:?}", err)))
         }
-        Err(err) => Err(format!("Failed to download image: {}", err)),
+        Err(err) => Err(KemonoError::from(err)),
     }
 }
 
@@ -107,7 +114,7 @@ async fn do_query(client: KemonoClient, service: &str, creator: &str) {
             }
             Err(err) => {
                 eprintln!(
-                    "Failed to query hostname={} service={service} creator={creator} error={err}",
+                    "Failed to query hostname={} service={service} creator={creator} error={err:?}",
                     client.hostname,
                     service = service,
                     creator = creator,
@@ -163,7 +170,7 @@ async fn do_download(client: KemonoClient, service: &str, creator: &str) -> Resu
             }
             Err(err) => {
                 eprintln!(
-                    "Failed to query hostname={} service={service} creator={creator} error={err}",
+                    "Failed to query hostname={} service={service} creator={creator} error={err:?}",
                     client.hostname,
                     service = service,
                     creator = creator,
@@ -176,7 +183,7 @@ async fn do_download(client: KemonoClient, service: &str, creator: &str) -> Resu
             let (post, attachment) = image;
 
             if let Err(err) = download_image(&client, post, attachment, creator, service) {
-                eprintln!("Failed to download image: {}", err);
+                eprintln!("Failed to download image: {:?}", err);
             };
         });
     }

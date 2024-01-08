@@ -1,9 +1,12 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
+use errors::KemonoError;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod errors;
 
 #[derive(Deserialize, Debug, Serialize)]
 pub struct Creator {
@@ -72,23 +75,24 @@ impl KemonoClient {
         }
     }
 
-    pub fn make_url(&self, endpoint: &str) -> Result<Url, String> {
-        Url::from_str(&format!("{}/{}", self.base_url(), endpoint)).map_err(|e| e.to_string())
+    pub fn make_url(&self, endpoint: &str) -> Result<Url, KemonoError> {
+        Url::from_str(&format!("{}/{}", self.base_url(), endpoint))
+            .map_err(|e| KemonoError::from(e.to_string()))
     }
 
     /// Get the app version hash
-    pub async fn app_version(&self) -> Result<String, String> {
+    pub async fn app_version(&self) -> Result<String, KemonoError> {
         let endpoint_url = self.make_url("app_version")?;
         reqwest::get(endpoint_url)
             .await
-            .map_err(|err| err.to_string())?
+            .map_err(|err| KemonoError::from(err.to_string()))?
             .text()
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| KemonoError::from(err.to_string()))
     }
 
     /// Get a list of creators
-    pub async fn creators(&self) -> Result<Vec<Creator>, String> {
+    pub async fn creators(&self) -> Result<Vec<Creator>, KemonoError> {
         let endpoint_url = self.make_url("creators.txt")?;
         println!("endpoint_url: {}", endpoint_url);
         let res = reqwest::get(endpoint_url)
@@ -96,7 +100,7 @@ impl KemonoClient {
             .map_err(|err| err.to_string())?;
         res.json::<Vec<Creator>>()
             .await
-            .map_err(|err| err.to_string())
+            .map_err(|err| KemonoError::from(err.to_string()))
     }
 
     /// Get a list of recent posts, filterable by query or offset
@@ -104,7 +108,7 @@ impl KemonoClient {
         &self,
         query: Option<&str>,
         offset: Option<usize>,
-    ) -> Result<Vec<Post>, String> {
+    ) -> Result<Vec<Post>, KemonoError> {
         let mut endpoint_url = self.make_url("posts")?;
         if let Some(query) = query {
             endpoint_url.query_pairs_mut().append_pair("q", query);
@@ -117,7 +121,9 @@ impl KemonoClient {
         let res = reqwest::get(endpoint_url)
             .await
             .map_err(|err| err.to_string())?;
-        res.json::<Vec<Post>>().await.map_err(|err| err.to_string())
+        res.json::<Vec<Post>>()
+            .await
+            .map_err(|err| KemonoError::from(err.to_string()))
     }
 
     /// Gets a list of posts for a given service/creator, filterable by query or offset
@@ -127,7 +133,7 @@ impl KemonoClient {
         creator: &str,
         query: Option<&str>,
         offset: Option<usize>,
-    ) -> Result<Vec<Post>, String> {
+    ) -> Result<Vec<Post>, KemonoError> {
         let mut endpoint_url = self.make_url(&format!("{}/user/{}", service, creator))?;
         if let Some(query) = query {
             endpoint_url.query_pairs_mut().append_pair("q", query);
@@ -139,8 +145,10 @@ impl KemonoClient {
         }
         let res = reqwest::get(endpoint_url)
             .await
-            .map_err(|err| err.to_string())?;
-        res.json::<Vec<Post>>().await.map_err(|err| err.to_string())
+            .map_err(|err| KemonoError::from(err))?;
+        res.json::<Vec<Post>>()
+            .await
+            .map_err(|err| KemonoError::from(err.to_string()))
     }
 
     // TODO: /{service}/user/{creator_id}/announcements
