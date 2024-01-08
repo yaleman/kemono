@@ -42,17 +42,17 @@ fn download_image(
     creator: &str,
     service: &str,
 ) -> Result<(), String> {
-    if let None = attachment.name {
+    if attachment.name.is_none() {
         return Err(format!("Attachment has no name! {:?}", attachment));
     }
-    if let None = attachment.path {
+    if attachment.path.is_none() {
         return Err(format!("Attachment has no path! {:?}", attachment));
     }
 
     let download_path = PathBuf::from(format!(
         "{}/{}-{}",
         client.get_download_path(service, creator),
-        post.published.replace(":", "-"),
+        post.published.replace(':', "-"),
         attachment.name.clone().unwrap()
     ));
     if download_path.exists() {
@@ -118,7 +118,7 @@ async fn do_query(client: KemonoClient, service: &str, creator: &str) {
     }
 }
 
-async fn do_download(client: KemonoClient, service: &str, creator: &str) {
+async fn do_download(client: KemonoClient, service: &str, creator: &str) -> Result<(), String> {
     // let _download_path = format!("./download/{}/{}", creator, service);
     let mut offset = 0;
     let mut total_posts = 0;
@@ -175,11 +175,12 @@ async fn do_download(client: KemonoClient, service: &str, creator: &str) {
         files.par_iter().for_each(|image| {
             let (post, attachment) = image;
 
-            download_image(&client, &post, &attachment, creator, service)
-                .map_err(|err| println!("{}", err))
-                .unwrap();
+            if let Err(err) = download_image(&client, post, attachment, creator, service) {
+                eprintln!("Failed to download image: {}", err);
+            };
         });
     }
+    Ok(())
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -192,7 +193,9 @@ async fn main() {
             do_query(client, &service, &creator).await;
         }
         Commands::Download { service, creator } => {
-            do_download(client, &service, &creator).await;
+            if let Err(err) = do_download(client, &service, &creator).await {
+                eprintln!("Failed to complete download: {}", err);
+            };
         }
     }
 }
