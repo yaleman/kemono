@@ -1,0 +1,10 @@
+/target
+.envrc
+download/
+.vscode/
+.DS_Store
+config.py
+dist/
+.env
+*.asc
+target/
