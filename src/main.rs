@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -7,41 +8,62 @@ use kemono::{Attachment, KemonoClient, Post};
 use rayon::prelude::*;
 
 use reqwest::Url;
+use retry::delay::Exponential;
+use serde_json::json;
 
 #[derive(Subcommand)]
 enum Commands {
     /// Dumps a list of posts in JSON format
-    Query {
-        #[arg(env = "KEMONO_SERVICE")]
-        service: String,
-        #[arg(env = "KEMONO_CREATOR")]
-        creator: String,
-    },
+    Query,
     /// does testing things
-    Download {
-        #[arg(env = "KEMONO_SERVICE")]
-        service: String,
-        #[arg(env = "KEMONO_CREATOR")]
-        creator: String,
-    },
+    Download,
+    Stats,
 }
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct CliOpts {
-    #[arg(env = "KEMONO_HOSTNAME")]
-    hostname: String,
-
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(env = "KEMONO_HOSTNAME")]
+    hostname: String,
+    #[arg(env = "KEMONO_SERVICE")]
+    service: String,
+    #[arg(env = "KEMONO_CREATOR")]
+    creator: String,
+    #[arg(env = "KEMONO_DEBUG", short, long)]
+    debug: bool,
+    #[arg(env = "KEMONO_DEBUG", short, long)]
+    /// If the "original" file is an mp4 or m4v then we might have a mkv file and that's OK
+    mkvs: bool,
 }
 
+/// replace the extension in a filename with mkv
+fn get_mkv_filename(filename: &str) -> String {
+    let parts = filename.split('.');
+    let mut new_filename = String::new();
+    let mut first = true;
+    for part in parts {
+        if !first {
+            new_filename.push('.');
+        }
+        if part == "mp4" || part == "m4v" {
+            new_filename.push_str("mkv");
+        } else {
+            new_filename.push_str(part);
+        }
+        first = false;
+    }
+    new_filename
+}
+
+/// download a given image
 fn download_image(
+    cli: &CliOpts,
     client: &KemonoClient,
     post: &Post,
     attachment: &Attachment,
-    creator: &str,
-    service: &str,
 ) -> Result<(), KemonoError> {
     if attachment.name.is_none() {
         return Err(KemonoError::from(format!(
@@ -49,19 +71,26 @@ fn download_image(
             attachment
         )));
     }
-    if attachment.path.is_none() {
-        return Err(KemonoError::from(format!(
-            "Attachment has no path! {:?}",
-            attachment
-        )));
-    }
-
-    let download_path = PathBuf::from(format!(
-        "{}/{}-{}",
-        client.get_download_path(service, creator),
+    let attachment_path = match &attachment.path {
+        None => {
+            return Err(KemonoError::from(format!(
+                "Attachment has no path! {:?}",
+                attachment
+            )));
+        }
+        Some(ap) => ap.to_owned(),
+    };
+    let download_filename = format!(
+        "{}-{}",
         post.published.replace(':', "-"),
         attachment.name.clone().unwrap()
+    );
+    let download_path = PathBuf::from(format!(
+        "{}/{}",
+        client.get_download_path(&cli.service, &cli.creator),
+        download_filename
     ));
+    // check
     if download_path.exists() {
         eprintln!(
             "Skipping {} because it already exists",
@@ -70,17 +99,20 @@ fn download_image(
         return Ok(());
     }
 
-    let url = Url::from_str(&format!(
-        "https://{}/{}",
-        client.hostname,
-        attachment.path.clone().unwrap()
-    ))
-    .map_err(|err| err.to_string())?;
+    if cli.mkvs {
+        let mkv_path = PathBuf::from(get_mkv_filename(&download_filename));
+        if mkv_path.exists() {
+            eprintln!("Skipping {} because it already exists", mkv_path.display());
+            return Ok(());
+        }
+    }
+
+    let url = Url::from_str(&format!("https://{}{}", client.hostname, attachment_path,))
+        .map_err(KemonoError::from_stringable)?;
     println!("Downloading {} to {}", url, download_path.display());
 
-    let image_data = reqwest::blocking::get(url).map_err(|err| err.to_string())?;
-
-    match image_data.bytes() {
+    let response = reqwest::blocking::get(url)?.error_for_status()?;
+    match response.bytes() {
         Ok(data) => {
             if !download_path.parent().unwrap().exists() {
                 std::fs::create_dir_all(download_path.parent().unwrap())
@@ -93,115 +125,133 @@ fn download_image(
     }
 }
 
-async fn do_query(client: KemonoClient, service: &str, creator: &str) {
-    println!("service: {}, creator: {}", service, creator);
-    let mut offset = 0;
-    loop {
-        let res = client.posts(service, creator, None, Some(offset)).await;
-        match res {
-            Ok(posts) => {
-                for post in &posts {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&post).expect("Failed to serialize data")
-                    );
-                }
-                if posts.len() != client.max_per_page() {
-                    break;
-                } else {
-                    offset += client.max_per_page()
-                }
-            }
-            Err(err) => {
-                eprintln!(
-                    "Failed to query hostname={} service={service} creator={creator} error={err:?}",
-                    client.hostname,
-                    service = service,
-                    creator = creator,
-                    err = err
-                );
-            }
-        }
-    }
-}
-
-async fn do_download(client: KemonoClient, service: &str, creator: &str) -> Result<(), String> {
-    // let _download_path = format!("./download/{}/{}", creator, service);
-    let mut offset = 0;
-    let mut total_posts = 0;
-    let mut files = vec![];
-    loop {
-        match client.posts(service, creator, None, Some(offset)).await {
-            Ok(posts) => {
-                let post_len = posts.len();
-                total_posts += post_len;
-                for post in posts {
-                    let post_data = serde_json::to_string(&post).expect("Failed to serialize post");
-                    let post_data_filepath = PathBuf::from(&format!(
-                        "{}/metadata/{}.json",
-                        client.get_download_path(service, creator),
-                        post.id
-                    ));
-                    if !post_data_filepath.parent().unwrap().exists() {
-                        std::fs::create_dir_all(post_data_filepath.parent().unwrap())
-                            .expect("Failed to create parent dirs");
-                    }
-
-                    if !post_data_filepath.exists() {
-                        std::fs::write(post_data_filepath, post_data)
-                            .expect("Failed to write post data");
-                    }
-                    if post.file.name.is_some() && post.file.path.is_some() {
-                        files.push((post.clone(), post.file.clone()));
-                    }
-                    if let Some(attachments) = post.attachments.clone() {
-                        for attachment in attachments {
-                            files.push((post.clone(), attachment));
-                        }
-                    }
-                }
-                if post_len != client.max_per_page() {
-                    // panic!("whoa, got {}", client.max_per_page())
-                    eprintln!("Got them all! Stopping at {}", total_posts);
-                    break;
-                }
-                offset += client.max_per_page();
-                eprintln!("grabbing next page, offset is now {}", offset);
-            }
-            Err(err) => {
-                eprintln!(
-                    "Failed to query hostname={} service={service} creator={creator} error={err:?}",
-                    client.hostname,
-                    service = service,
-                    creator = creator,
-                    err = err
-                );
-            }
-        }
-        eprintln!("Starting to download {} objects", files.len());
-        files.par_iter().for_each(|image| {
-            let (post, attachment) = image;
-
-            if let Err(err) = download_image(&client, post, attachment, creator, service) {
-                eprintln!("Failed to download image: {:?}", err);
-            };
-        });
+async fn do_query(cli: CliOpts, client: KemonoClient) -> Result<(), KemonoError> {
+    let posts = client.all_posts(&cli.service, &cli.creator).await?;
+    for post in posts {
+        println!("{}", serde_json::to_string_pretty(&post)?);
     }
     Ok(())
 }
+
+async fn do_download(cli: CliOpts, client: KemonoClient) -> Result<(), KemonoError> {
+    let mut files = Vec::new();
+
+    for post in client.all_posts(&cli.service, &cli.creator).await? {
+        let post_data_filepath = PathBuf::from(&format!(
+            "{}/metadata/{}.json",
+            client.get_download_path(&cli.service, &cli.creator),
+            post.id
+        ));
+
+        if !post_data_filepath.parent().unwrap().exists() {
+            std::fs::create_dir_all(post_data_filepath.parent().unwrap())
+                .expect("Failed to create parent dirs");
+        }
+
+        if !post_data_filepath.exists() {
+            std::fs::write(post_data_filepath, serde_json::to_string_pretty(&post)?)
+                .expect("Failed to write post data");
+        }
+        if post.file.name.is_some() && post.file.path.is_some() {
+            files.push((post.clone(), post.file.clone()));
+        }
+        if let Some(attachments) = post.attachments.clone() {
+            for attachment in attachments {
+                files.push((post.clone(), attachment));
+            }
+        }
+    }
+
+    eprintln!("Starting to download {} objects", files.len());
+
+    files.par_iter().for_each(|image| {
+        let (post, attachment) = image;
+
+        if let Err(err) =
+            retry::retry_with_index(Exponential::from_millis(3000).take(5), |current_try| {
+                if current_try > 0 {
+                    eprintln!(
+                        "Retrying download of {} (try {})",
+                        attachment.name.clone().unwrap(),
+                        current_try
+                    );
+                }
+                download_image(&cli, &client, post, attachment)
+            })
+        {
+            eprintln!("Failed to download file: {:?}", err);
+        };
+    });
+    Ok(())
+}
+
+async fn do_stats(client: KemonoClient, cli: &CliOpts) -> Result<(), KemonoError> {
+    let posts = client.all_posts(&cli.service, &cli.creator).await?;
+
+    let post_count = posts.len();
+    let mut filetypes: HashMap<String, usize> = HashMap::new();
+    let mut file_count = 0;
+
+    for post in posts {
+        if let Some(attachments) = post.attachments {
+            for attachment in attachments {
+                if let Some(name) = attachment.name {
+                    let ext = name.split('.').last().unwrap().to_string();
+                    let count = filetypes.entry(ext).or_insert(0);
+                    *count += 1;
+                    file_count += 1;
+                }
+            }
+        }
+        if let Some(name) = post.file.name {
+            let ext = name.split('.').last().unwrap().to_string();
+            let count = filetypes.entry(ext).or_insert(0);
+            *count += 1;
+            file_count += 1;
+        }
+    }
+
+    let stats = json!({
+        "post_count": post_count,
+        "file_count" : file_count,
+        "filetypes": filetypes,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&stats)?);
+
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = CliOpts::parse();
-    println!("hostname: {}", cli.hostname);
     let client = KemonoClient::new(&cli.hostname);
-
     match cli.command {
-        Commands::Query { service, creator } => {
-            do_query(client, &service, &creator).await;
+        Commands::Stats => {
+            eprintln!(
+                "Pulling stats for {}/{}/{}",
+                cli.hostname, cli.service, cli.creator
+            );
+            if let Err(err) = do_stats(client, &cli).await {
+                eprintln!("Failed to complete stats: {:?}", err);
+            };
         }
-        Commands::Download { service, creator } => {
-            if let Err(err) = do_download(client, &service, &creator).await {
-                eprintln!("Failed to complete download: {}", err);
+        Commands::Query => {
+            eprintln!(
+                "Pulling API data for {}/{}/{}",
+                cli.hostname, cli.service, cli.creator
+            );
+            if let Err(err) = do_query(cli, client).await {
+                eprintln!("Failed to complete query: {:?}", err);
+            };
+        }
+        Commands::Download => {
+            eprintln!(
+                "Downloading all content for {}/{}/{}",
+                cli.hostname, cli.service, cli.creator
+            );
+            if let Err(err) = do_download(cli, client).await {
+                eprintln!("Failed to complete download: {:?}", err);
             };
         }
     }

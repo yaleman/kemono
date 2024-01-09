@@ -84,23 +84,20 @@ impl KemonoClient {
     pub async fn app_version(&self) -> Result<String, KemonoError> {
         let endpoint_url = self.make_url("app_version")?;
         reqwest::get(endpoint_url)
-            .await
-            .map_err(|err| KemonoError::from(err.to_string()))?
+            .await?
             .text()
             .await
-            .map_err(|err| KemonoError::from(err.to_string()))
+            .map_err(KemonoError::from_stringable)
     }
 
     /// Get a list of creators
     pub async fn creators(&self) -> Result<Vec<Creator>, KemonoError> {
         let endpoint_url = self.make_url("creators.txt")?;
         println!("endpoint_url: {}", endpoint_url);
-        let res = reqwest::get(endpoint_url)
-            .await
-            .map_err(|err| err.to_string())?;
+        let res = reqwest::get(endpoint_url).await?;
         res.json::<Vec<Creator>>()
             .await
-            .map_err(|err| KemonoError::from(err.to_string()))
+            .map_err(KemonoError::from_stringable)
     }
 
     /// Get a list of recent posts, filterable by query or offset
@@ -118,12 +115,25 @@ impl KemonoClient {
                 .query_pairs_mut()
                 .append_pair("o", offset.to_string().as_str());
         }
-        let res = reqwest::get(endpoint_url)
-            .await
-            .map_err(|err| err.to_string())?;
+        let res = reqwest::get(endpoint_url).await?;
         res.json::<Vec<Post>>()
             .await
-            .map_err(|err| KemonoError::from(err.to_string()))
+            .map_err(KemonoError::from_stringable)
+    }
+
+    /// get *all* posts for a creator/service combination
+    pub async fn all_posts(&self, service: &str, creator: &str) -> Result<Vec<Post>, KemonoError> {
+        let mut offset = 0;
+        let mut posts = Vec::new();
+        loop {
+            let res = self.posts(service, creator, None, Some(offset)).await?;
+            if res.is_empty() {
+                break;
+            }
+            posts.extend(res);
+            offset += self.max_per_page();
+        }
+        Ok(posts)
     }
 
     /// Gets a list of posts for a given service/creator, filterable by query or offset
@@ -143,12 +153,10 @@ impl KemonoClient {
                 .query_pairs_mut()
                 .append_pair("o", offset.to_string().as_str());
         }
-        let res = reqwest::get(endpoint_url)
-            .await
-            .map_err(|err| KemonoError::from(err))?;
+        let res = reqwest::get(endpoint_url).await?;
         res.json::<Vec<Post>>()
             .await
-            .map_err(|err| KemonoError::from(err.to_string()))
+            .map_err(KemonoError::from_stringable)
     }
 
     // TODO: /{service}/user/{creator_id}/announcements
