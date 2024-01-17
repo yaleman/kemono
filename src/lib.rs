@@ -1,12 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use errors::KemonoError;
+use reqwest::cookie::Jar;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod errors;
+
+pub static DEFAULT_DOWNLOAD_PATH: &str = "./download";
 
 #[derive(Deserialize, Debug, Serialize)]
 pub struct Creator {
@@ -46,22 +51,62 @@ pub struct Post {
 pub struct KemonoClient {
     pub hostname: String,
     pub download_path: Option<String>,
+    pub session: Option<reqwest::blocking::Client>,
+
+    pub cookies: Arc<Jar>,
+    #[allow(dead_code)]
+    pub username: Option<String>,
+    #[allow(dead_code)]
+    pub password: Option<String>,
 }
 
 impl KemonoClient {
+    pub fn new_from(client: &KemonoClient) -> Self {
+        Self {
+            hostname: client.hostname.clone(),
+            download_path: client.download_path.clone(),
+            session: client.session.clone(),
+            cookies: Arc::new(Jar::default()),
+            username: client.username.clone(),
+            password: client.password.clone(),
+        }
+    }
+
     pub fn base_url(&self) -> String {
         format!("https://{}/api/v1", self.hostname)
     }
 
+    // pub fn user_agent(&self) -> String {
+    //     format!("Rust Kemono Client v{}", env!("CARGO_PKG_VERSION"))
+    // }
+
+    pub fn new_session(&mut self) -> Result<(), KemonoError> {
+        self.session = Some(
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(900))
+                .cookie_store(true)
+                .cookie_provider(self.cookies.clone())
+                .build()?,
+        );
+        Ok(())
+    }
+    pub fn new_async_session(&mut self) -> Result<reqwest::Client, KemonoError> {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .cookie_store(true)
+            .cookie_provider(self.cookies.clone())
+            .build()
+            .map_err(|err| err.into())
+    }
+
+    pub fn get_base_download_path(&self) -> String {
+        self.download_path
+            .clone()
+            .unwrap_or(DEFAULT_DOWNLOAD_PATH.to_string())
+    }
+
     pub fn get_download_path(&self, service: &str, creator: &str) -> String {
-        format!(
-            "{}/{}/{}",
-            self.download_path
-                .clone()
-                .unwrap_or("./download".to_string()),
-            creator,
-            service,
-        )
+        format!("{}/{}/{}", self.get_base_download_path(), creator, service,)
     }
 
     pub fn max_per_page(&self) -> usize {
@@ -72,6 +117,10 @@ impl KemonoClient {
         Self {
             hostname: hostname.to_string(),
             download_path: None,
+            session: None,
+            username: None,
+            password: None,
+            cookies: Arc::new(Jar::default()),
         }
     }
 
@@ -93,7 +142,7 @@ impl KemonoClient {
     /// Get a list of creators
     pub async fn creators(&self) -> Result<Vec<Creator>, KemonoError> {
         let endpoint_url = self.make_url("creators.txt")?;
-        println!("endpoint_url: {}", endpoint_url);
+        // println!("endpoint_url: {}", endpoint_url);
         let res = reqwest::get(endpoint_url).await?;
         res.json::<Vec<Creator>>()
             .await
@@ -122,7 +171,11 @@ impl KemonoClient {
     }
 
     /// get *all* posts for a creator/service combination
-    pub async fn all_posts(&self, service: &str, creator: &str) -> Result<Vec<Post>, KemonoError> {
+    pub async fn all_posts(
+        &mut self,
+        service: &str,
+        creator: &str,
+    ) -> Result<Vec<Post>, KemonoError> {
         let mut offset = 0;
         let mut posts = Vec::new();
         loop {
@@ -138,7 +191,7 @@ impl KemonoClient {
 
     /// Gets a list of posts for a given service/creator, filterable by query or offset
     pub async fn posts(
-        &self,
+        &mut self,
         service: &str,
         creator: &str,
         query: Option<&str>,
@@ -153,7 +206,9 @@ impl KemonoClient {
                 .query_pairs_mut()
                 .append_pair("o", offset.to_string().as_str());
         }
-        let res = reqwest::get(endpoint_url).await?;
+        let client = self.new_async_session()?;
+
+        let res = client.get(endpoint_url).send().await?;
         res.json::<Vec<Post>>()
             .await
             .map_err(KemonoError::from_stringable)
@@ -193,6 +248,37 @@ impl KemonoClient {
 
     // TODO: /{service}/user/{creator_id}/post/{post_id}
     // Get a specific post
+
+    pub async fn login(&mut self) -> Result<(), KemonoError> {
+        let endpoint_url = Url::from_str(&format!("https://{}/account/login", self.hostname))
+            .map_err(|err| err.to_string())?;
+
+        let mut form = HashMap::new();
+        if let Some(username) = self.username.clone() {
+            form.insert("username", username);
+        }
+
+        if let Some(password) = self.password.clone() {
+            form.insert("password", password);
+        }
+
+        let client = self.new_async_session()?;
+
+        let res = client
+            .post(endpoint_url)
+            .header(
+                "Referer",
+                format!("https://{}/account/login", self.hostname),
+            )
+            .form(&form)
+            .send()
+            .await?
+            .error_for_status()?;
+        if res.url().as_str().contains("login") {
+            return Err(KemonoError::from_stringable("Login failed"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -238,5 +324,24 @@ mod tests {
             .expect("Failed to query endpoint");
         assert!(!res.is_empty());
         println!("res: {:?}", res);
+    }
+
+    #[tokio::test]
+    async fn test_live_login() {
+        let host = std::env::var("KEMONO_HOSTNAME").expect("Failed to get KEMONO_HOSTNAME env var");
+
+        let mut client = KemonoClient::new(&host);
+        client.username = Some(
+            std::env::var("KEMONO_USERNAME")
+                .expect("Couldn't get password from env var")
+                .to_string(),
+        );
+        client.password = Some(
+            std::env::var("KEMONO_PASSWORD")
+                .expect("Couldn't get password from env var")
+                .to_string(),
+        );
+
+        client.login().await.expect("Failed to login");
     }
 }
