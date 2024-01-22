@@ -181,6 +181,10 @@ impl KemonoClient {
         loop {
             let res = self.posts(service, creator, None, Some(offset)).await?;
             if res.is_empty() {
+                // eprintln!(
+                //     "Empty response from server {}/{} offset: {}",
+                //     service, creator, offset
+                // );
                 break;
             }
             posts.extend(res);

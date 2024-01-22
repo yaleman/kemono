@@ -5,7 +5,7 @@ use std::str::FromStr;
 use clap::{Parser, Subcommand};
 use kemono::errors::KemonoError;
 use kemono::{Attachment, KemonoClient, Post, DEFAULT_DOWNLOAD_PATH};
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPoolBuilder};
 
 use reqwest::Url;
 use serde_json::json;
@@ -27,7 +27,7 @@ struct CliOpts {
     #[command(subcommand)]
     command: Commands,
 
-    #[arg(env = "KEMONO_HOSTNAME")]
+    #[arg(short = 'H', long, env = "KEMONO_HOSTNAME")]
     hostname: String,
     #[arg(env = "KEMONO_SERVICE")]
     service: String,
@@ -44,6 +44,9 @@ struct CliOpts {
     username: Option<String>,
     #[arg(env = "KEMONO_PASSWORD")]
     password: Option<String>,
+
+    #[arg(env = "KEMONO_THREADS", short, long, default_value = "2")]
+    threads: usize,
 }
 
 /// replace the extension in a filename with mkv
@@ -300,6 +303,7 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                         mkvs: cli.mkvs,
                         username: cli.username.clone(),
                         password: cli.password.clone(),
+                        threads: cli.threads,
                     },
                     client,
                 )
@@ -326,6 +330,12 @@ async fn main() {
             return;
         }
     }
+
+    // build the threadpool for rayon so we don't get rate limited
+    let _ = ThreadPoolBuilder::new()
+        .num_threads(cli.threads)
+        .build_global()
+        .unwrap();
 
     match cli.command {
         Commands::Stats => {
