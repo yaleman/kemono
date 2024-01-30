@@ -105,6 +105,7 @@ impl KemonoClient {
             .unwrap_or(DEFAULT_DOWNLOAD_PATH.to_string())
     }
 
+    /// Returns the base_path + creator + service
     pub fn get_download_path(&self, service: &str, creator: &str) -> String {
         format!("{}/{}/{}", self.get_base_download_path(), creator, service,)
     }
@@ -283,6 +284,30 @@ impl KemonoClient {
         }
         Ok(())
     }
+}
+
+/// replace the extension in a filename with mkv
+///
+/// ```
+/// use kemono::get_mkv_filename;
+/// assert_eq!(get_mkv_filename("test.mp4"), "test.mkv");
+///  ```
+pub fn get_mkv_filename(filename: &str) -> String {
+    let parts = filename.split('.');
+    let mut new_filename = String::new();
+    let mut first = true;
+    for part in parts {
+        if !first {
+            new_filename.push('.');
+        }
+        if part == "mp4" || part == "m4v" {
+            new_filename.push_str("mkv");
+        } else {
+            new_filename.push_str(part);
+        }
+        first = false;
+    }
+    new_filename
 }
 
 #[cfg(test)]

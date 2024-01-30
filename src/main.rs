@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use kemono::errors::KemonoError;
-use kemono::{Attachment, KemonoClient, Post, DEFAULT_DOWNLOAD_PATH};
+use kemono::{get_mkv_filename, Attachment, KemonoClient, Post, DEFAULT_DOWNLOAD_PATH};
 use rayon::{prelude::*, ThreadPoolBuilder};
 
 use reqwest::Url;
@@ -47,25 +47,9 @@ struct CliOpts {
 
     #[arg(env = "KEMONO_THREADS", short, long, default_value = "2")]
     threads: usize,
-}
 
-/// replace the extension in a filename with mkv
-fn get_mkv_filename(filename: &str) -> String {
-    let parts = filename.split('.');
-    let mut new_filename = String::new();
-    let mut first = true;
-    for part in parts {
-        if !first {
-            new_filename.push('.');
-        }
-        if part == "mp4" || part == "m4v" {
-            new_filename.push_str("mkv");
-        } else {
-            new_filename.push_str(part);
-        }
-        first = false;
-    }
-    new_filename
+    #[arg(short, long)]
+    filename: Option<String>,
 }
 
 /// download a given file
@@ -120,10 +104,18 @@ fn download_content(
 
     if cli.mkvs {
         let mkv_path = PathBuf::from(get_mkv_filename(&download_filename));
-        if mkv_path.exists() {
+        let full_mkv_path = PathBuf::from(client.get_download_path(&cli.service, &cli.creator))
+            .join(mkv_path.clone());
+        if full_mkv_path.exists() {
             if cli.debug {
-                eprintln!("Skipping {} because it already exists", mkv_path.display());
+                eprintln!(
+                    "Skipping mkv {} because it already exists",
+                    full_mkv_path.display()
+                );
             }
+            return Ok(());
+        } else {
+            eprintln!("Couldn't find mkv {}", full_mkv_path.display());
             return Ok(());
         }
     }
@@ -200,6 +192,16 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
 
     eprintln!("Starting to download {} objects", files.len());
     files.par_iter().for_each(|image| {
+        if let Some(filename) = cli.filename.clone() {
+            if let Some(post_file_name) = image.1.name.clone() {
+                if !post_file_name.contains(&filename) {
+                    if cli.debug {
+                        eprintln!("Skipping {} as doesn't match {}", post_file_name, filename);
+                    }
+                    return;
+                }
+            }
+        }
         let (post, attachment) = image;
         let mut client = KemonoClient::new_from(client);
 
@@ -304,6 +306,7 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                         username: cli.username.clone(),
                         password: cli.password.clone(),
                         threads: cli.threads,
+                        filename: cli.filename.clone(),
                     },
                     client,
                 )
@@ -321,8 +324,8 @@ async fn main() {
     let mut client = KemonoClient::new(&cli.hostname);
     client.username = cli.username.clone();
     client.password = cli.password.clone();
-    if cli.mkvs && cli.debug {
-        eprintln!("MKV  checking mode enabled");
+    if cli.mkvs {
+        eprintln!("MKV checking mode enabled");
     }
     if client.username.is_some() {
         if let Err(err) = client.login().await {
