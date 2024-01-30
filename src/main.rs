@@ -115,8 +115,10 @@ fn download_content(
             }
             return Ok(());
         } else {
-            eprintln!("Couldn't find mkv {}", full_mkv_path.display());
-            return Ok(());
+            if cli.debug {
+                eprintln!("Couldn't find mkv {}", full_mkv_path.display());
+            }
+            // return Ok(());
         }
     }
 
