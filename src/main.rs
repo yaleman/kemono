@@ -13,43 +13,89 @@ use serde_json::json;
 #[derive(Subcommand)]
 enum Commands {
     /// Dumps a list of posts in JSON format
-    Query,
+    Query {
+        #[arg(env = "KEMONO_SERVICE")]
+        service: String,
+        #[arg(env = "KEMONO_CREATOR")]
+        creator: String,
+        #[clap(flatten)]
+        copt: SharedCliOpts,
+    },
     /// does testing things
-    Download,
-    Stats,
+    Download {
+        #[arg(env = "KEMONO_SERVICE")]
+        service: String,
+        #[arg(env = "KEMONO_CREATOR")]
+        creator: String,
+        #[clap(flatten)]
+        copt: SharedCliOpts,
+    },
+    Stats {
+        #[arg(env = "KEMONO_SERVICE")]
+        service: String,
+        #[arg(env = "KEMONO_CREATOR")]
+        creator: String,
+        #[clap(flatten)]
+        copt: SharedCliOpts,
+    },
     /// Iterate through creator/service dirs and download all the filew we don't have.
-    Update,
+    Update {
+        #[arg(env = "KEMONO_CREATOR", short, long)]
+        creator: Option<String>,
+        #[arg(env = "KEMONO_SERVICE", short, long)]
+        service: Option<String>,
+        #[clap(flatten)]
+        copt: SharedCliOpts,
+    },
 }
+
+#[derive(Clone, Parser)]
+struct SharedCliOpts {}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct CliOpts {
-    #[command(subcommand)]
-    command: Commands,
-
     #[arg(short = 'H', long, env = "KEMONO_HOSTNAME")]
     hostname: String,
-    #[arg(env = "KEMONO_SERVICE")]
-    service: String,
-    #[arg(env = "KEMONO_CREATOR")]
-    creator: String,
-    #[arg(env = "KEMONO_DEBUG", short, long)]
-    debug: bool,
-    #[arg(env = "KEMONO_MKVS", short, long)]
-
-    /// If the "original" file is an mp4 or m4v then we might have a mkv file and that's OK
-    mkvs: bool,
+    #[arg(env = "KEMONO_THREADS", short, long, default_value = "2")]
+    threads: usize,
 
     #[arg(env = "KEMONO_USERNAME")]
     username: Option<String>,
     #[arg(env = "KEMONO_PASSWORD")]
     password: Option<String>,
+    #[arg(env = "KEMONO_DEBUG", short, long)]
+    debug: bool,
 
-    #[arg(env = "KEMONO_THREADS", short, long, default_value = "2")]
-    threads: usize,
+    #[arg(env = "KEMONO_MKVS", short, long)]
+    /// If the "original" file is an mp4 or m4v then we might have a mkv file and that's OK
+    mkvs: bool,
 
     #[arg(short, long)]
     filename: Option<String>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+impl CliOpts {
+    fn service(&self) -> String {
+        match &self.command {
+            Commands::Query { service, .. } => service.clone(),
+            Commands::Download { service, .. } => service.clone(),
+            Commands::Stats { service, .. } => service.clone(),
+            Commands::Update { service, .. } => service.clone().unwrap_or("".to_string()),
+        }
+    }
+
+    fn creator(&self) -> String {
+        match &self.command {
+            Commands::Query { creator, .. } => creator.clone(),
+            Commands::Download { creator, .. } => creator.clone(),
+            Commands::Stats { creator, .. } => creator.clone(),
+            Commands::Update { creator, .. } => creator.clone().unwrap_or("".to_string()),
+        }
+    }
 }
 
 /// download a given file
@@ -88,7 +134,7 @@ fn download_content(
     );
     let download_path = PathBuf::from(format!(
         "{}/{}",
-        client.get_download_path(&cli.service, &cli.creator),
+        client.get_download_path(&cli.service(), &cli.creator()),
         download_filename
     ));
     // check
@@ -104,7 +150,7 @@ fn download_content(
 
     if cli.mkvs {
         let mkv_path = PathBuf::from(get_mkv_filename(&download_filename));
-        let full_mkv_path = PathBuf::from(client.get_download_path(&cli.service, &cli.creator))
+        let full_mkv_path = PathBuf::from(client.get_download_path(&cli.service(), &cli.creator()))
             .join(mkv_path.clone());
         if full_mkv_path.exists() {
             if cli.debug {
@@ -156,7 +202,7 @@ fn download_content(
 }
 
 async fn do_query(cli: CliOpts, client: &mut KemonoClient) -> Result<(), KemonoError> {
-    let posts = client.all_posts(&cli.service, &cli.creator).await?;
+    let posts = client.all_posts(&cli.service(), &cli.creator()).await?;
     for post in posts {
         println!("{}", serde_json::to_string_pretty(&post)?);
     }
@@ -166,10 +212,10 @@ async fn do_query(cli: CliOpts, client: &mut KemonoClient) -> Result<(), KemonoE
 async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), KemonoError> {
     let mut files = Vec::new();
 
-    for post in client.all_posts(&cli.service, &cli.creator).await? {
+    for post in client.all_posts(&cli.service(), &cli.creator()).await? {
         let post_data_filepath = PathBuf::from(&format!(
             "{}/metadata/{}.json",
-            client.get_download_path(&cli.service, &cli.creator),
+            client.get_download_path(&cli.service(), &cli.creator()),
             post.id
         ));
 
@@ -192,7 +238,7 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
         }
     }
 
-    eprintln!("Starting to download {} objects", files.len());
+    eprintln!("Found {} objects", files.len());
     files.par_iter().for_each(|image| {
         if let Some(filename) = cli.filename.clone() {
             if let Some(post_file_name) = image.1.name.clone() {
@@ -231,7 +277,7 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
 }
 
 async fn do_stats(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), KemonoError> {
-    let posts = client.all_posts(&cli.service, &cli.creator).await?;
+    let posts = client.all_posts(&cli.service(), &cli.creator()).await?;
 
     let post_count = posts.len();
     let mut filetypes: HashMap<String, usize> = HashMap::new();
@@ -260,8 +306,8 @@ async fn do_stats(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemono
         "post_count": post_count,
         "file_count" : file_count,
         "filetypes": filetypes,
-        "service": cli.service,
-        "creator": cli.creator,
+        "service": cli.service(),
+        "creator": cli.creator(),
     });
 
     println!("{}", serde_json::to_string_pretty(&stats)?);
@@ -279,7 +325,15 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
         let creator = creator.map_err(|err| err.to_string())?;
         // find the services
         let creator_name = creator.file_name();
+
         let creator_name = creator_name.to_str().expect("Failed to string-ify creator");
+
+        if !cli.creator().is_empty() {
+            if creator_name != cli.creator() {
+                continue;
+            }
+        }
+
         if creator.path().is_dir() {
             for service in creator.path().read_dir().map_err(|err| err.to_string())? {
                 let service = service
@@ -297,14 +351,28 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                     serde_json::to_string(&json!({"creator": creator_name,"service" : service}))?
                 );
 
+                if !cli.service().is_empty() && cli.service() != service {
+                    if cli.debug {
+                        eprintln!(
+                            "Skipping service {} for creator {} as didn't match {}",
+                            service,
+                            creator_name,
+                            cli.service()
+                        );
+                    }
+                    continue;
+                }
+
                 do_download(
                     CliOpts {
-                        command: Commands::Download,
-                        service: service.to_string(),
-                        creator: creator_name.to_string(),
-                        hostname: cli.hostname.clone(),
+                        command: Commands::Download {
+                            copt: SharedCliOpts {},
+                            service: service.to_string(),
+                            creator: creator_name.to_string(),
+                        },
                         debug: cli.debug,
                         mkvs: cli.mkvs,
+                        hostname: cli.hostname.clone(),
                         username: cli.username.clone(),
                         password: cli.password.clone(),
                         threads: cli.threads,
@@ -323,10 +391,10 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = CliOpts::parse();
-    let mut client = KemonoClient::new(&cli.hostname);
+    let mut client = KemonoClient::new(&cli.hostname.clone());
     client.username = cli.username.clone();
     client.password = cli.password.clone();
-    if cli.mkvs {
+    if cli.mkvs && cli.debug {
         eprintln!("MKV checking mode enabled");
     }
     if client.username.is_some() {
@@ -343,34 +411,40 @@ async fn main() {
         .unwrap();
 
     match cli.command {
-        Commands::Stats => {
+        Commands::Stats { .. } => {
             eprintln!(
                 "Pulling stats for {}/{}/{}",
-                cli.hostname, cli.service, cli.creator
+                cli.hostname,
+                cli.service(),
+                cli.creator()
             );
             if let Err(err) = do_stats(&mut client, &cli).await {
                 eprintln!("Failed to complete stats: {:?}", err);
             };
         }
-        Commands::Query => {
+        Commands::Query { .. } => {
             eprintln!(
                 "Pulling API data for {}/{}/{}",
-                cli.hostname, cli.service, cli.creator
+                cli.hostname,
+                cli.service(),
+                cli.creator()
             );
             if let Err(err) = do_query(cli, &mut client).await {
                 eprintln!("Failed to complete query: {:?}", err);
             };
         }
-        Commands::Download => {
+        Commands::Download { .. } => {
             eprintln!(
                 "Downloading all content for {}/{}/{}",
-                cli.hostname, cli.service, cli.creator
+                cli.hostname,
+                cli.service(),
+                cli.creator()
             );
             if let Err(err) = do_download(cli, &mut client).await {
                 eprintln!("Failed to complete download: {:?}", err);
             };
         }
-        Commands::Update => {
+        Commands::Update { .. } => {
             eprintln!(
                 "Updating all content for creators/services in {} service: {}",
                 client
