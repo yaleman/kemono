@@ -1,3 +1,6 @@
+use log::{debug, error, info};
+use structured_logger::{async_json::new_writer, Builder};
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -140,7 +143,7 @@ fn download_content(
     // check
     if download_path.exists() {
         if cli.debug {
-            eprintln!(
+            debug!(
                 "Skipping {} because it already exists",
                 download_path.display()
             );
@@ -153,18 +156,13 @@ fn download_content(
         let full_mkv_path = PathBuf::from(client.get_download_path(&cli.service(), &cli.creator()))
             .join(mkv_path.clone());
         if full_mkv_path.exists() {
-            if cli.debug {
-                eprintln!(
-                    "Skipping mkv {} because it already exists",
-                    full_mkv_path.display()
-                );
-            }
+            debug!(
+                "Skipping mkv {} because it already exists",
+                full_mkv_path.display()
+            );
             return Ok(());
         } else {
-            if cli.debug {
-                eprintln!("Couldn't find mkv {}", full_mkv_path.display());
-            }
-            // return Ok(());
+            debug!("Couldn't find mkv {}", full_mkv_path.display());
         }
     }
 
@@ -238,13 +236,13 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
         }
     }
 
-    eprintln!("Found {} objects", files.len());
+    info!("Found {} objects", files.len());
     files.par_iter().for_each(|image| {
         if let Some(filename) = cli.filename.clone() {
             if let Some(post_file_name) = image.1.name.clone() {
                 if !post_file_name.contains(&filename) {
                     if cli.debug {
-                        eprintln!("Skipping {} as doesn't match {}", post_file_name, filename);
+                        debug!("Skipping {} as doesn't match {}", post_file_name, filename);
                     }
                     return;
                 }
@@ -260,17 +258,16 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
                 KemonoError::Reqwest(req_error) => {
                     if let Some(status_code) = req_error.status() {
                         if status_code.as_u16() == 429 {
-                            eprintln!("Got rate limited, bailing for now!");
+                            error!("Got rate limited, bailing for now!");
                             std::process::exit(1);
                         }
                     } else {
-                        eprintln!("Failed to download {:?} {:?}", attachment, req_error);
+                        error!("Failed to download {:?} {:?}", attachment, req_error);
                     }
                 }
-                _ => eprintln!("Failed to download {:?} {:?}", attachment, err), // KemonoError::Generic(_) => todo!(),
-                                                                                 // KemonoError::SerdeJson(_) => todo!(),
+                _ => error!("Failed to download {:?} {:?}", attachment, err), // KemonoError::Generic(_) => todo!(),
+                                                                              // KemonoError::SerdeJson(_) => todo!(),
             }
-            // eprintln!("Failed to download {:?} {:?}", attachment, err);
         };
     });
     Ok(())
@@ -328,16 +325,14 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
 
         let creator_name = creator_name.to_str().expect("Failed to string-ify creator");
 
-        if !cli.creator().is_empty() {
-            if creator_name != cli.creator() {
-                continue;
-            }
+        if !cli.creator().is_empty() && creator_name != cli.creator() {
+            continue;
         }
 
         if creator.path().is_dir() {
             for service in creator.path().read_dir().map_err(|err| err.to_string())? {
                 let service = service
-                    .map_err(|err| format!("failed to get direntry: {}", err.to_string()))?
+                    .map_err(|err| format!("failed to get direntry: {}", err))?
                     .path();
                 if !service.is_dir() {
                     continue;
@@ -346,20 +341,18 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                     .file_name()
                     .map(|s| s.to_str().expect("Failed to string-ify service"))
                     .expect("Failed to get service name");
-                eprintln!(
+                info!(
                     "{}",
                     serde_json::to_string(&json!({"creator": creator_name,"service" : service}))?
                 );
 
                 if !cli.service().is_empty() && cli.service() != service {
-                    if cli.debug {
-                        eprintln!(
-                            "Skipping service {} for creator {} as didn't match {}",
-                            service,
-                            creator_name,
-                            cli.service()
-                        );
-                    }
+                    debug!(
+                        "Skipping service {} for creator {} as didn't match {}",
+                        service,
+                        creator_name,
+                        cli.service()
+                    );
                     continue;
                 }
 
@@ -391,61 +384,71 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = CliOpts::parse();
+
+    let log_level = match cli.debug {
+        false => "info",
+        true => "debug",
+    };
+
+    Builder::with_level(log_level)
+        .with_target_writer("*", new_writer(tokio::io::stdout()))
+        .init();
+
     let mut client = KemonoClient::new(&cli.hostname.clone());
     client.username = cli.username.clone();
     client.password = cli.password.clone();
     if cli.mkvs && cli.debug {
-        eprintln!("MKV checking mode enabled");
+        debug!("MKV checking mode enabled");
     }
     if client.username.is_some() {
         if let Err(err) = client.login().await {
-            eprintln!("Failed to login: {:?}", err);
+            error!("Failed to login: {:?}", err);
             return;
         }
     }
 
     // build the threadpool for rayon so we don't get rate limited
-    let _ = ThreadPoolBuilder::new()
+    ThreadPoolBuilder::new()
         .num_threads(cli.threads)
         .build_global()
         .unwrap();
 
     match cli.command {
         Commands::Stats { .. } => {
-            eprintln!(
+            info!(
                 "Pulling stats for {}/{}/{}",
                 cli.hostname,
                 cli.service(),
                 cli.creator()
             );
             if let Err(err) = do_stats(&mut client, &cli).await {
-                eprintln!("Failed to complete stats: {:?}", err);
+                error!("Failed to complete stats: {:?}", err);
             };
         }
         Commands::Query { .. } => {
-            eprintln!(
+            info!(
                 "Pulling API data for {}/{}/{}",
                 cli.hostname,
                 cli.service(),
                 cli.creator()
             );
             if let Err(err) = do_query(cli, &mut client).await {
-                eprintln!("Failed to complete query: {:?}", err);
+                error!("Failed to complete query: {:?}", err);
             };
         }
         Commands::Download { .. } => {
-            eprintln!(
+            info!(
                 "Downloading all content for {}/{}/{}",
                 cli.hostname,
                 cli.service(),
                 cli.creator()
             );
             if let Err(err) = do_download(cli, &mut client).await {
-                eprintln!("Failed to complete download: {:?}", err);
+                error!("Failed to complete download: {:?}", err);
             };
         }
         Commands::Update { .. } => {
-            eprintln!(
+            info!(
                 "Updating all content for creators/services in {} service: {}",
                 client
                     .download_path
@@ -454,7 +457,7 @@ async fn main() {
                 client.hostname
             );
             if let Err(err) = do_update(&mut client, &cli).await {
-                eprintln!("Failed to complete update: {:?}", err);
+                error!("Failed to complete update: {:?}", err);
             };
         }
     }
