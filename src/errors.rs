@@ -4,6 +4,7 @@ pub enum KemonoError {
     Generic(String),
     SerdeJson(serde_json::Error),
     RateLimited,
+    GetPostsError(String),
 }
 
 impl core::fmt::Display for KemonoError {
@@ -13,6 +14,7 @@ impl core::fmt::Display for KemonoError {
             KemonoError::Generic(e) => write!(f, "Generic error: {}", e),
             KemonoError::SerdeJson(e) => write!(f, "SerdeJson error: {}", e),
             KemonoError::RateLimited => write!(f, "Rate limited"),
+            KemonoError::GetPostsError(e) => write!(f, "Error getting posts: {}", e),
         }
     }
 }

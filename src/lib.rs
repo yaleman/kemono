@@ -215,9 +215,12 @@ impl KemonoClient {
         let client = self.new_async_session()?;
 
         let res = client.get(endpoint_url).send().await?;
+        if res.status().as_u16() == 429 {
+            return Err(KemonoError::RateLimited);
+        }
         res.json::<Vec<Post>>()
             .await
-            .map_err(KemonoError::from_stringable)
+            .map_err(|e| KemonoError::GetPostsError(format!("{:?}", e)))
     }
 
     // TODO: /{service}/user/{creator_id}/announcements

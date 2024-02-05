@@ -266,16 +266,18 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
                         error!("Failed to download {:?} {:?}", attachment, req_error);
                     }
                 }
+                KemonoError::RateLimited => {
+                    return Err(KemonoError::RateLimited);
+                }
                 _ => error!("Failed to download {:?} {:?}", attachment, err), // KemonoError::Generic(_) => todo!(),
                                                                               // KemonoError::SerdeJson(_) => todo!(),
             }
         };
         Ok(())
     });
+    // handle any errors
+    res.collect::<Result<Vec<_>, _>>()?;
 
-    if let Err(err) = res.collect::<Result<Vec<_>, _>>() {
-        return Err(err);
-    }
     Ok(())
 }
 
@@ -396,10 +398,18 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                 )
                 .await
                 {
-                    eprintln!(
-                        "Failed to update creator: {} service: {} {:?}",
-                        creator_name, service, err
-                    );
+                    match err {
+                        KemonoError::RateLimited => {
+                            error!("Got rate limited, bailing for now!");
+                            return Err(KemonoError::RateLimited);
+                        }
+                        _ => {
+                            eprintln!(
+                                "Failed to update creator: {} service: {} {:?}",
+                                creator_name, service, err
+                            );
+                        }
+                    }
                 };
             }
         }
@@ -427,12 +437,6 @@ async fn main() {
     if cli.mkvs && cli.debug {
         debug!("MKV checking mode enabled");
     }
-    // if client.username.is_some() {
-    //     if let Err(err) = client.login().await {
-    //         error!("Failed to login: {:?}", err);
-    //         return;
-    //     }
-    // }
 
     // build the threadpool for rayon so we don't get rate limited
     ThreadPoolBuilder::new()
