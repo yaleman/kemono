@@ -3,6 +3,7 @@ pub enum KemonoError {
     Reqwest(reqwest::Error),
     Generic(String),
     SerdeJson(serde_json::Error),
+    RateLimited,
 }
 
 impl core::fmt::Display for KemonoError {
@@ -11,6 +12,7 @@ impl core::fmt::Display for KemonoError {
             KemonoError::Reqwest(e) => write!(f, "Reqwest error: {}", e),
             KemonoError::Generic(e) => write!(f, "Generic error: {}", e),
             KemonoError::SerdeJson(e) => write!(f, "SerdeJson error: {}", e),
+            KemonoError::RateLimited => write!(f, "Rate limited"),
         }
     }
 }

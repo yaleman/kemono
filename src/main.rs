@@ -237,14 +237,14 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
     }
 
     info!("Found {} objects", files.len());
-    files.par_iter().for_each(|image| {
+    let res = files.par_iter().map(|image| {
         if let Some(filename) = cli.filename.clone() {
             if let Some(post_file_name) = image.1.name.clone() {
                 if !post_file_name.contains(&filename) {
                     if cli.debug {
                         debug!("Skipping {} as doesn't match {}", post_file_name, filename);
                     }
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -258,8 +258,9 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
                 KemonoError::Reqwest(req_error) => {
                     if let Some(status_code) = req_error.status() {
                         if status_code.as_u16() == 429 {
+                            eprintln!("Got rate limited, bailing for now!");
                             error!("Got rate limited, bailing for now!");
-                            std::process::exit(1);
+                            return Err(KemonoError::RateLimited);
                         }
                     } else {
                         error!("Failed to download {:?} {:?}", attachment, req_error);
@@ -269,7 +270,12 @@ async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), Kemo
                                                                               // KemonoError::SerdeJson(_) => todo!(),
             }
         };
+        Ok(())
     });
+
+    if let Err(err) = res.collect::<Result<Vec<_>, _>>() {
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -318,6 +324,8 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
     //
     let base_path = PathBuf::from(&client.get_base_download_path());
 
+    eprintln!("Checking {}", base_path.display());
+
     for creator in base_path.read_dir().map_err(|err| err.to_string())? {
         let creator = creator.map_err(|err| err.to_string())?;
         // find the services
@@ -326,8 +334,14 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
         let creator_name = creator_name.to_str().expect("Failed to string-ify creator");
 
         if !cli.creator().is_empty() && creator_name != cli.creator() {
+            debug!(
+                "Skipping {} as doesn't match {}",
+                creator_name,
+                cli.creator()
+            );
             continue;
         }
+        debug!("Updating {}", creator_name);
 
         if creator.path().is_dir() {
             for service in creator.path().read_dir().map_err(|err| err.to_string())? {
@@ -335,28 +349,35 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                     .map_err(|err| format!("failed to get direntry: {}", err))?
                     .path();
                 if !service.is_dir() {
+                    eprintln!("Skipping service {:?}", service);
                     continue;
                 }
                 let service = service
                     .file_name()
                     .map(|s| s.to_str().expect("Failed to string-ify service"))
                     .expect("Failed to get service name");
-                info!(
+
+                eprintln!(
                     "{}",
                     serde_json::to_string(&json!({"creator": creator_name,"service" : service}))?
                 );
 
                 if !cli.service().is_empty() && cli.service() != service {
-                    debug!(
+                    info!(
                         "Skipping service {} for creator {} as didn't match {}",
                         service,
                         creator_name,
                         cli.service()
                     );
                     continue;
+                } else {
+                    eprintln!(
+                        "Continuing with creator: {} service: {}",
+                        creator_name, service
+                    );
                 }
 
-                do_download(
+                if let Err(err) = do_download(
                     CliOpts {
                         command: Commands::Download {
                             copt: SharedCliOpts {},
@@ -373,7 +394,13 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                     },
                     client,
                 )
-                .await?;
+                .await
+                {
+                    eprintln!(
+                        "Failed to update creator: {} service: {} {:?}",
+                        creator_name, service, err
+                    );
+                };
             }
         }
     }
@@ -400,12 +427,12 @@ async fn main() {
     if cli.mkvs && cli.debug {
         debug!("MKV checking mode enabled");
     }
-    if client.username.is_some() {
-        if let Err(err) = client.login().await {
-            error!("Failed to login: {:?}", err);
-            return;
-        }
-    }
+    // if client.username.is_some() {
+    //     if let Err(err) = client.login().await {
+    //         error!("Failed to login: {:?}", err);
+    //         return;
+    //     }
+    // }
 
     // build the threadpool for rayon so we don't get rate limited
     ThreadPoolBuilder::new()
@@ -456,8 +483,9 @@ async fn main() {
                     .unwrap_or(DEFAULT_DOWNLOAD_PATH.to_string()),
                 client.hostname
             );
-            if let Err(err) = do_update(&mut client, &cli).await {
-                error!("Failed to complete update: {:?}", err);
+            match do_update(&mut client, &cli).await {
+                Err(err) => eprintln!("Failed to complete update: {:?}", err),
+                Ok(()) => eprintln!("Update complete"),
             };
         }
     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use errors::KemonoError;
-use log::warn;
+use log::debug;
 use reqwest::cookie::Jar;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -183,7 +183,7 @@ impl KemonoClient {
         loop {
             let res = self.posts(service, creator, None, Some(offset)).await?;
             if res.is_empty() {
-                warn!(
+                debug!(
                     "Empty response from server {}/{} offset: {}",
                     service, creator, offset
                 );
