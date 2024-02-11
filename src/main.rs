@@ -13,23 +13,27 @@ use rayon::{prelude::*, ThreadPoolBuilder};
 use reqwest::Url;
 use serde_json::json;
 
+#[derive(Parser)]
+struct CreatorAndService {
+    #[arg(env = "KEMONO_CREATOR")]
+    creator: String,
+    #[arg(env = "KEMONO_SERVICE")]
+    service: String,
+}
 #[derive(Subcommand)]
 enum Commands {
     /// Dumps a list of posts in JSON format
     Query {
-        #[arg(env = "KEMONO_SERVICE")]
-        service: String,
-        #[arg(env = "KEMONO_CREATOR")]
-        creator: String,
+        #[clap(flatten)]
+        creatorandservice: CreatorAndService,
+
         #[clap(flatten)]
         copt: SharedCliOpts,
     },
     /// does testing things
     Download {
-        #[arg(env = "KEMONO_SERVICE")]
-        service: String,
-        #[arg(env = "KEMONO_CREATOR")]
-        creator: String,
+        #[clap(flatten)]
+        creatorandservice: CreatorAndService,
         #[clap(flatten)]
         copt: SharedCliOpts,
     },
@@ -84,8 +88,12 @@ struct CliOpts {
 impl CliOpts {
     fn service(&self) -> String {
         match &self.command {
-            Commands::Query { service, .. } => service.clone(),
-            Commands::Download { service, .. } => service.clone(),
+            Commands::Query {
+                creatorandservice, ..
+            } => creatorandservice.service.clone(),
+            Commands::Download {
+                creatorandservice, ..
+            } => creatorandservice.service.clone(),
             Commands::Stats { service, .. } => service.clone(),
             Commands::Update { service, .. } => service.clone().unwrap_or("".to_string()),
         }
@@ -93,8 +101,12 @@ impl CliOpts {
 
     fn creator(&self) -> String {
         match &self.command {
-            Commands::Query { creator, .. } => creator.clone(),
-            Commands::Download { creator, .. } => creator.clone(),
+            Commands::Query {
+                creatorandservice, ..
+            } => creatorandservice.creator.clone(),
+            Commands::Download {
+                creatorandservice, ..
+            } => creatorandservice.creator.clone(),
             Commands::Stats { creator, .. } => creator.clone(),
             Commands::Update { creator, .. } => creator.clone().unwrap_or("".to_string()),
         }
@@ -210,7 +222,16 @@ async fn do_query(cli: CliOpts, client: &mut KemonoClient) -> Result<(), KemonoE
 async fn do_download(cli: CliOpts, client: &mut KemonoClient) -> Result<(), KemonoError> {
     let mut files = Vec::new();
 
-    for post in client.all_posts(&cli.service(), &cli.creator()).await? {
+    let all_posts = client.all_posts(&cli.service(), &cli.creator()).await?;
+    if all_posts.is_empty() {
+        return Err(KemonoError::from(format!(
+            "No posts found for {}/{}",
+            cli.service(),
+            cli.creator()
+        )));
+    }
+
+    for post in all_posts {
         let post_data_filepath = PathBuf::from(&format!(
             "{}/metadata/{}.json",
             client.get_download_path(&cli.service(), &cli.creator()),
@@ -383,8 +404,10 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                     CliOpts {
                         command: Commands::Download {
                             copt: SharedCliOpts {},
-                            service: service.to_string(),
-                            creator: creator_name.to_string(),
+                            creatorandservice: CreatorAndService {
+                                creator: creator_name.to_string(),
+                                service: service.to_string(),
+                            },
                         },
                         debug: cli.debug,
                         mkvs: cli.mkvs,
