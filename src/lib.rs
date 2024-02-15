@@ -115,10 +115,10 @@ impl KemonoClient {
         50
     }
 
-    pub fn new(hostname: &str) -> Self {
+    pub fn new(hostname: &str, download_path: Option<String>) -> Self {
         Self {
             hostname: hostname.to_string(),
-            download_path: None,
+            download_path,
             session: None,
             username: None,
             password: None,
@@ -363,7 +363,7 @@ mod tests {
     async fn test_live_login() {
         let host = std::env::var("KEMONO_HOSTNAME").expect("Failed to get KEMONO_HOSTNAME env var");
 
-        let mut client = KemonoClient::new(&host);
+        let mut client = KemonoClient::new(&host, None);
         client.username = Some(
             std::env::var("KEMONO_USERNAME")
                 .expect("Couldn't get password from env var")

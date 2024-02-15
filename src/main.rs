@@ -83,6 +83,9 @@ struct CliOpts {
 
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(short = 'D', long, env = "KEMONO_DOWNLOAD_PATH")]
+    download_path: Option<String>,
 }
 
 impl CliOpts {
@@ -416,6 +419,7 @@ async fn do_update(client: &mut KemonoClient, cli: &CliOpts) -> Result<(), Kemon
                         password: cli.password.clone(),
                         threads: cli.threads,
                         filename: cli.filename.clone(),
+                        download_path: cli.download_path.clone(),
                     },
                     client,
                 )
@@ -454,7 +458,7 @@ async fn main() {
         .with_target_writer("*", new_writer(tokio::io::stdout()))
         .init();
 
-    let mut client = KemonoClient::new(&cli.hostname.clone());
+    let mut client = KemonoClient::new(&cli.hostname.clone(), cli.download_path.clone());
     client.username = cli.username.clone();
     client.password = cli.password.clone();
     if cli.mkvs && cli.debug {
